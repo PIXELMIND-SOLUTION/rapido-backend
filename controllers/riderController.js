@@ -1,5 +1,7 @@
 import Rider from '../models/Rider.js';
+import User from '../models/User.js';
 
+// ==================== RIDER PROFILE ====================
 export const getMyProfile = async (req, res) => {
   try {
     const rider = await Rider.findOne({ userId: req.user.id })
@@ -91,107 +93,152 @@ export const setOnlineStatus = async (req, res) => {
   }
 };
 
-export const getAllRiders = async (req, res) => {
+// ==================== RIDER LOCATION ====================
+export const updateRiderLocation = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
+    const userId = req.user.id;
+    const { latitude, longitude, address } = req.body;
 
-    const filter = {};
-    if (req.query.status) filter.verificationStatus = req.query.status;
-    if (req.query.vehicleType) filter['vehicle.type'] = req.query.vehicleType;
-
-    const [riders, total] = await Promise.all([
-      Rider.find(filter)
-        .populate('userId', 'name email phoneNumber')
-        .select('-__v')
-        .skip(skip)
-        .limit(limit)
-        .sort({ createdAt: -1 }),
-      Rider.countDocuments(filter)
-    ]);
-
-    return res.status(200).json({
-      success: true,
-      message: 'Riders fetched',
-      data: {
-        riders,
-        pagination: { total, page, pages: Math.ceil(total / limit) }
-      }
-    });
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: err.message,
-      ...(process.env.NODE_ENV === 'development' && { error: err.stack })
-    });
-  }
-};
-
-export const updateVerification = async (req, res) => {
-  try {
-    const { status, rejectionReason } = req.body;
-    const validStatuses = ['pending', 'under_review', 'verified', 'rejected'];
-    if (!validStatuses.includes(status)) {
+    if (latitude === undefined || longitude === undefined) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid status'
+        message: 'Latitude and longitude are required'
       });
     }
 
-    const rider = await Rider.findById(req.params.id);
+    if (latitude < -90 || latitude > 90) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid latitude. Must be between -90 and 90'
+      });
+    }
+
+    if (longitude < -180 || longitude > 180) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid longitude. Must be between -180 and 180'
+      });
+    }
+
+    const rider = await Rider.findOne({ userId });
+    
     if (!rider) {
       return res.status(404).json({
         success: false,
-        message: 'Rider not found'
+        message: 'Rider profile not found'
       });
     }
 
-    rider.verificationStatus = status;
-    rider.isApproved = status === 'verified';
-    if (status === 'rejected') {
-      rider.rejectionReason = rejectionReason || 'Documents invalid';
-    }
+    rider.currentLocation = {
+      type: 'Point',
+      coordinates: [parseFloat(longitude), parseFloat(latitude)],
+      address: address || '',
+      updatedAt: new Date()
+    };
+
     await rider.save();
 
     return res.status(200).json({
       success: true,
-      message: `Rider ${status}`,
+      message: 'Rider location updated',
       data: {
-        id: rider._id,
-        verificationStatus: rider.verificationStatus,
-        isApproved: rider.isApproved
+        location: rider.currentLocation
       }
     });
   } catch (err) {
+    console.error('Update rider location error:', err);
     return res.status(500).json({
       success: false,
-      message: err.message,
-      ...(process.env.NODE_ENV === 'development' && { error: err.stack })
+      message: 'Failed to update rider location',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
     });
   }
 };
 
-export const getRiderById = async (req, res) => {
+export const getRiderLocation = async (req, res) => {
   try {
-    const rider = await Rider.findById(req.params.id)
-      .populate('userId', 'name email phoneNumber');
+    const { riderId } = req.params;
+
+    const rider = await Rider.findById(riderId).select('currentLocation');
+    
     if (!rider) {
       return res.status(404).json({
         success: false,
         message: 'Rider not found'
       });
     }
+
     return res.status(200).json({
       success: true,
-      message: 'Rider fetched',
-      data: { rider }
+      message: 'Rider location fetched',
+      data: {
+        location: rider.currentLocation || {
+          coordinates: [0, 0],
+          address: '',
+          updatedAt: null
+        }
+      }
     });
   } catch (err) {
+    console.error('Get rider location error:', err);
     return res.status(500).json({
       success: false,
-      message: err.message,
-      ...(process.env.NODE_ENV === 'development' && { error: err.stack })
+      message: 'Failed to get rider location',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    });
+  }
+};
+
+export const findNearbyRiders = async (req, res) => {
+  try {
+    const { latitude, longitude, radius = 5 } = req.query;
+
+    let searchLat = latitude;
+    let searchLng = longitude;
+
+    if (!searchLat || !searchLng) {
+      const userId = req.user.id;
+      const user = await User.findById(userId).select('location');
+      
+      if (user && user.location && user.location.coordinates[0] !== 0) {
+        [searchLng, searchLat] = user.location.coordinates;
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: 'Location not provided. Please provide latitude and longitude.'
+        });
+      }
+    }
+
+    const nearbyRiders = await Rider.find({
+      isApproved: true,
+      isOnline: true,
+      'currentLocation.coordinates': {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [parseFloat(searchLng), parseFloat(searchLat)]
+          },
+          $maxDistance: radius * 1000
+        }
+      }
+    }).populate('userId', 'name phoneNumber email');
+
+    return res.status(200).json({
+      success: true,
+      message: `Found ${nearbyRiders.length} nearby riders`,
+      data: {
+        nearbyRiders,
+        count: nearbyRiders.length,
+        radius: radius
+      }
+    });
+  } catch (err) {
+    console.error('Find nearby riders error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to find nearby riders',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
     });
   }
 };

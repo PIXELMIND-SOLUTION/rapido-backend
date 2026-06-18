@@ -1,5 +1,7 @@
 import User from '../models/User.js';
 
+// ==================== USER PROFILE ====================
+
 export const getProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-otp -__v');
@@ -70,65 +72,146 @@ export const updateProfile = async (req, res) => {
   }
 };
 
-export const getAllUsers = async (req, res) => {
+// ==================== USER LOCATION ====================
+export const updateUserLocation = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
+    const userId = req.user.id;
+    const { latitude, longitude, address } = req.body;
 
-    const filter = { role: 'user' };
-    if (req.query.search) {
-      filter.$or = [
-        { name: { $regex: req.query.search, $options: 'i' } },
-        { phoneNumber: { $regex: req.query.search } }
-      ];
+    if (latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude are required'
+      });
     }
 
-    const [users, total] = await Promise.all([
-      User.find(filter).select('-otp -__v').skip(skip).limit(limit).sort({ createdAt: -1 }),
-      User.countDocuments(filter)
-    ]);
+    if (latitude < -90 || latitude > 90) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid latitude. Must be between -90 and 90'
+      });
+    }
 
-    return res.status(200).json({
-      success: true,
-      message: 'Users fetched',
-      data: {
-        users,
-        pagination: { total, page, pages: Math.ceil(total / limit) }
-      }
-    });
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: err.message,
-      ...(process.env.NODE_ENV === 'development' && { error: err.stack })
-    });
-  }
-};
+    if (longitude < -180 || longitude > 180) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid longitude. Must be between -180 and 180'
+      });
+    }
 
-export const deactivateUser = async (req, res) => {
-  try {
     const user = await User.findByIdAndUpdate(
-      req.params.id,
-      { isActive: false },
+      userId,
+      {
+        $set: {
+          'location.coordinates': [parseFloat(longitude), parseFloat(latitude)],
+          'location.address': address || '',
+          'location.updatedAt': new Date()
+        }
+      },
       { new: true }
-    );
+    ).select('-otp -__v');
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
+
     return res.status(200).json({
       success: true,
-      message: 'User deactivated',
-      data: { id: user._id }
+      message: 'Location updated successfully',
+      data: {
+        location: user.location
+      }
     });
   } catch (err) {
+    console.error('Update location error:', err);
     return res.status(500).json({
       success: false,
-      message: err.message,
-      ...(process.env.NODE_ENV === 'development' && { error: err.stack })
+      message: 'Failed to update location',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    });
+  }
+};
+
+export const getUserLocation = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId).select('location');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Location fetched successfully',
+      data: {
+        location: user.location || {
+          coordinates: [0, 0],
+          address: '',
+          updatedAt: null
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Get location error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get location',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    });
+  }
+};
+
+export const findNearbyUsers = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { radius = 5 } = req.query;
+
+    const user = await User.findById(userId).select('location');
+    
+    if (!user || !user.location || user.location.coordinates[0] === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'User location not set. Please update location first.'
+      });
+    }
+
+    const [longitude, latitude] = user.location.coordinates;
+
+    const nearbyUsers = await User.find({
+      _id: { $ne: userId },
+      'location.coordinates': {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [longitude, latitude]
+          },
+          $maxDistance: radius * 1000
+        }
+      }
+    }).select('name phoneNumber location');
+
+    return res.status(200).json({
+      success: true,
+      message: `Found ${nearbyUsers.length} nearby users`,
+      data: {
+        nearbyUsers,
+        count: nearbyUsers.length,
+        radius: radius
+      }
+    });
+  } catch (err) {
+    console.error('Find nearby users error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to find nearby users',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
     });
   }
 };

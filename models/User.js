@@ -37,9 +37,31 @@ const userSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true
+    },
+    // ✅ ADD LOCATION FIELD
+    location: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point'
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        default: [0, 0]
+      },
+      address: {
+        type: String,
+        default: ''
+      },
+      updatedAt: {
+        type: Date,
+        default: Date.now
+      }
     }
   },
   { timestamps: true }
 );
+
+userSchema.index({ 'location.coordinates': '2dsphere' });
 
 export default mongoose.model('User', userSchema);

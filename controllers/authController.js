@@ -17,6 +17,184 @@ const validate = (req, res, next) => {
   next();
 };
 
+// ==================== ADMIN REGISTRATION ====================
+export const registerAdmin = [
+  body('name').trim().notEmpty().withMessage('Name is required'),
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('phoneNumber')
+    .trim()
+    .notEmpty().withMessage('Phone number is required')
+    .matches(/^\+?[1-9]\d{9,14}$/).withMessage('Invalid phone number format'),
+  body('password')
+    .notEmpty().withMessage('Password is required')
+    .isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+  body('role')
+    .optional()
+    .isIn(['admin', 'super_admin']).withMessage('Role must be admin or super_admin'),
+  validate,
+  async (req, res) => {
+    try {
+      const { name, email, phoneNumber, password, role } = req.body;
+
+      const existingAdmin = await Admin.findOne({ 
+        $or: [{ email }, { phoneNumber }] 
+      });
+
+      if (existingAdmin) {
+        return res.status(400).json({
+          success: false,
+          message: 'Admin with this email or phone already exists'
+        });
+      }
+
+      const admin = new Admin({
+        name,
+        email,
+        phoneNumber,
+        password,
+        role: role || 'admin'
+      });
+
+      await admin.save();
+
+      const token = TokenService.getToken(admin);
+
+      return res.status(201).json({
+        success: true,
+        message: 'Admin registered successfully',
+        data: {
+          admin: {
+            id: admin._id,
+            name: admin.name,
+            email: admin.email,
+            phoneNumber: admin.phoneNumber,
+            role: admin.role
+          }
+        },
+        token: token.token,
+        expiresIn: token.expiresIn
+      });
+    } catch (err) {
+      console.error('Admin registration error:', err);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to register admin',
+        ...(process.env.NODE_ENV === 'development' && { error: err.message })
+      });
+    }
+  }
+];
+
+// ==================== ADMIN LOGIN ====================
+export const adminLogin = [
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('password').notEmpty().withMessage('Password is required'),
+  validate,
+  async (req, res) => {
+    try {
+      const { email, password } = req.body;
+
+      const admin = await Admin.findOne({ email, isActive: true });
+      if (!admin) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid credentials'
+        });
+      }
+
+      const isValid = await admin.comparePassword(password);
+      if (!isValid) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid credentials'
+        });
+      }
+
+      const otp = OTPService.generate();
+      admin.otp = { code: otp, expiresAt: OTPService.expiryDate() };
+      await admin.save();
+
+      await OTPService.send(admin.phoneNumber, otp, 'admin login');
+
+      return res.status(200).json({
+        success: true,
+        message: 'Password verified. OTP sent.',
+        data: {
+          email: admin.email,
+          phoneNumber: admin.phoneNumber.replace(/(\d{2})\d+(\d{2})/, '$1*****$2')
+        }
+      });
+    } catch (err) {
+      console.error('Admin login error:', err);
+      return res.status(500).json({
+        success: false,
+        message: 'Admin login failed',
+        ...(process.env.NODE_ENV === 'development' && { error: err.message })
+      });
+    }
+  }
+];
+
+// ==================== ADMIN VERIFY OTP ====================
+export const adminVerifyOTP = [
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('otp')
+    .notEmpty().withMessage('OTP is required')
+    .isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+    .isNumeric().withMessage('OTP must be numeric'),
+  validate,
+  async (req, res) => {
+    try {
+      const { email, otp } = req.body;
+
+      const admin = await Admin.findOne({ email });
+      if (!admin) {
+        return res.status(404).json({
+          success: false,
+          message: 'Admin not found'
+        });
+      }
+
+      const result = OTPService.validate(admin.otp, otp);
+      if (!result.valid) {
+        return res.status(400).json({
+          success: false,
+          message: result.message
+        });
+      }
+
+      admin.otp = undefined;
+      admin.lastLogin = new Date();
+      await admin.save();
+
+      const token = TokenService.getToken(admin);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Admin login successful!',
+        data: {
+          admin: {
+            id: admin._id,
+            name: admin.name,
+            email: admin.email,
+            phoneNumber: admin.phoneNumber,
+            role: admin.role
+          }
+        },
+        token: token.token,
+        expiresIn: token.expiresIn
+      });
+    } catch (err) {
+      console.error('Admin verify OTP error:', err);
+      return res.status(500).json({
+        success: false,
+        message: 'Admin OTP verification failed',
+        ...(process.env.NODE_ENV === 'development' && { error: err.message })
+      });
+    }
+  }
+];
+
 // ==================== SEND OTP ====================
 export const sendOTP = [
   body('phoneNumber')
@@ -96,6 +274,7 @@ export const verifyOTP = [
       user.otp = undefined;
       await user.save();
 
+      // ✅ Generate tempToken for registration
       const tempToken = TokenService.generateToken({
         _id: user._id,
         phoneNumber: user.phoneNumber,
@@ -247,8 +426,12 @@ export const registerUser = [
   }
 ];
 
-// ==================== REGISTER RIDER ====================
+// ==================== REGISTER RIDER (NO TOKEN REQUIRED) ====================
 export const registerRider = [
+  body('phoneNumber')
+    .trim()
+    .notEmpty().withMessage('Phone number is required')
+    .matches(/^\+?[1-9]\d{9,14}$/).withMessage('Invalid phone number format'),
   body('name').trim().notEmpty().withMessage('Name is required'),
   body('fullName').trim().notEmpty().withMessage('Full name is required'),
   body('dateOfBirth')
@@ -274,8 +457,8 @@ export const registerRider = [
   validate,
   async (req, res) => {
     try {
-      const userId = req.user.id;
       const {
+        phoneNumber,
         name, email,
         fullName, dateOfBirth, gender,
         aadhaarNumber, panNumber,
@@ -285,20 +468,27 @@ export const registerRider = [
         address
       } = req.body;
 
-      const user = await User.findById(userId);
+      // ✅ Find or create user by phone number
+      let user = await User.findOne({ phoneNumber });
+      
       if (!user) {
-        return res.status(404).json({
-          success: false,
-          message: 'User not found'
+        user = new User({
+          phoneNumber,
+          role: 'rider'
         });
+        await user.save();
       }
-      if (!user.isPhoneVerified) {
+
+      // ✅ Check if user already has a rider profile
+      const existingRider = await Rider.findOne({ userId: user._id });
+      if (existingRider) {
         return res.status(400).json({
           success: false,
-          message: 'Phone not verified'
+          message: 'User already has a rider profile'
         });
       }
 
+      // ✅ Check unique fields
       const checks = await Promise.all([
         Rider.findOne({ 'aadhaar.number': aadhaarNumber }),
         Rider.findOne({ 'pan.number': panNumber }),
@@ -332,7 +522,7 @@ export const registerRider = [
       }
 
       if (email) {
-        const emailExists = await User.findOne({ email, _id: { $ne: userId } });
+        const emailExists = await User.findOne({ email, _id: { $ne: user._id } });
         if (emailExists) {
           return res.status(400).json({
             success: false,
@@ -341,14 +531,17 @@ export const registerRider = [
         }
       }
 
+      // ✅ Update user
       user.name = name;
       user.email = email;
       user.role = 'rider';
+      user.isPhoneVerified = true;
       user.isProfileComplete = true;
       await user.save();
 
+      // ✅ Create rider profile
       const rider = new Rider({
-        userId,
+        userId: user._id,
         fullName,
         dateOfBirth,
         gender,
@@ -369,6 +562,9 @@ export const registerRider = [
       await rider.save();
 
       user.riderId = rider._id;
+      await user.save();
+
+      // ✅ Generate token
       const token = TokenService.getToken(user);
 
       return res.status(201).json({
@@ -548,113 +744,3 @@ export const logout = async (req, res) => {
     });
   }
 };
-
-// ==================== ADMIN LOGIN ====================
-export const adminLogin = [
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  body('password').notEmpty().withMessage('Password is required'),
-  validate,
-  async (req, res) => {
-    try {
-      const { email, password } = req.body;
-
-      const admin = await Admin.findOne({ email, isActive: true });
-      if (!admin) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid credentials'
-        });
-      }
-
-      const isValid = await admin.comparePassword(password);
-      if (!isValid) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid credentials'
-        });
-      }
-
-      const otp = OTPService.generate();
-      admin.otp = { code: otp, expiresAt: OTPService.expiryDate() };
-      await admin.save();
-
-      await OTPService.send(admin.phoneNumber, otp, 'admin login');
-
-      return res.status(200).json({
-        success: true,
-        message: 'Password verified. OTP sent.',
-        data: {
-          email: admin.email,
-          phoneNumber: admin.phoneNumber.replace(/(\d{2})\d+(\d{2})/, '$1*****$2')
-        }
-      });
-    } catch (err) {
-      console.error('Admin login error:', err);
-      return res.status(500).json({
-        success: false,
-        message: 'Admin login failed',
-        ...(process.env.NODE_ENV === 'development' && { error: err.message })
-      });
-    }
-  }
-];
-
-// ==================== ADMIN VERIFY OTP ====================
-export const adminVerifyOTP = [
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  body('otp')
-    .notEmpty().withMessage('OTP is required')
-    .isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
-    .isNumeric().withMessage('OTP must be numeric'),
-  validate,
-  async (req, res) => {
-    try {
-      const { email, otp } = req.body;
-
-      const admin = await Admin.findOne({ email });
-      if (!admin) {
-        return res.status(404).json({
-          success: false,
-          message: 'Admin not found'
-        });
-      }
-
-      const result = OTPService.validate(admin.otp, otp);
-      if (!result.valid) {
-        return res.status(400).json({
-          success: false,
-          message: result.message
-        });
-      }
-
-      admin.otp = undefined;
-      admin.lastLogin = new Date();
-      await admin.save();
-
-      const token = TokenService.getToken(admin);
-
-      return res.status(200).json({
-        success: true,
-        message: 'Admin login successful!',
-        data: {
-          admin: {
-            id: admin._id,
-            name: admin.name,
-            email: admin.email,
-            phoneNumber: admin.phoneNumber,
-            role: admin.role
-          }
-        },
-        token: token.token,
-        expiresIn: token.expiresIn
-      });
-    } catch (err) {
-      console.error('Admin verify OTP error:', err);
-      return res.status(500).json({
-        success: false,
-        message: 'Admin OTP verification failed',
-        ...(process.env.NODE_ENV === 'development' && { error: err.message })
-      });
-    }
-  }
-];

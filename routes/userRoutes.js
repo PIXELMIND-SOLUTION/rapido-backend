@@ -1,12 +1,16 @@
 import express from 'express';
+import { authenticate } from '../middleware/auth.js';
 import * as userController from '../controllers/userController.js';
-import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// ==================== USER PROFILE ====================
 router.get('/profile', authenticate, userController.getProfile);
 router.put('/profile', authenticate, userController.updateProfile);
-router.get('/all', authenticate, authorize('admin'), userController.getAllUsers);
-router.put('/deactivate/:id', authenticate, authorize('admin'), userController.deactivateUser);
+
+// ==================== USER LOCATION ====================
+router.put('/location', authenticate, userController.updateUserLocation);
+router.get('/location', authenticate, userController.getUserLocation);
+router.get('/nearby/users', authenticate, userController.findNearbyUsers);
 
 export default router;
