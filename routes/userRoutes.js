@@ -11,6 +11,6 @@ router.put('/profile', authenticate, userController.updateProfile);
 // ==================== USER LOCATION ====================
 router.put('/location', authenticate, userController.updateUserLocation);
 router.get('/location', authenticate, userController.getUserLocation);
-router.get('/nearby/users', authenticate, userController.findNearbyUsers);
+router.get('/nearby/riders', authenticate, userController.findNearbyRiders);
 
 export default router;

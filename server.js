@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
@@ -22,6 +23,20 @@ const PORT = process.env.PORT || 6033;
 
 // Connect to MongoDB
 connectDB();
+
+
+mongoose.connection.once('open', async () => {
+  try {
+    // Create geospatial index for riders
+    await mongoose.connection.db.collection('riders').createIndex(
+      { "currentLocation.coordinates": "2dsphere" }
+    );
+    console.log('✅ Geospatial index created for riders');
+  } catch (error) {
+    console.log('⚠️ Index creation warning:', error.message);
+  }
+});
+
 
 // Middleware
 app.use(helmet());
@@ -84,3 +99,5 @@ app.listen(PORT, () => {
   console.log(`💡 OTP Mode: ${process.env.OTP_DEV_MODE === 'true' ? 'DEV (1234)' : 'PRODUCTION'}`);
   console.log('='.repeat(50));
 });
+
+

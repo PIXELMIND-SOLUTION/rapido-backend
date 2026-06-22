@@ -1,5 +1,5 @@
 import User from '../models/User.js';
-
+import Rider from '../models/Rider.js';
 // ==================== USER PROFILE ====================
 
 export const getProfile = async (req, res) => {
@@ -168,49 +168,75 @@ export const getUserLocation = async (req, res) => {
   }
 };
 
-export const findNearbyUsers = async (req, res) => {
+// ==================== FIND NEARBY RIDERS ====================
+export const findNearbyRiders = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { radius = 5 } = req.query;
+    const { latitude, longitude, radius = 5 } = req.query;
 
-    const user = await User.findById(userId).select('location');
-    
-    if (!user || !user.location || user.location.coordinates[0] === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'User location not set. Please update location first.'
-      });
+    // ✅ Get user location
+    let searchLat = latitude;
+    let searchLng = longitude;
+
+    if (!searchLat || !searchLng) {
+      const user = await User.findById(userId).select('location');
+      
+      if (!user || !user.location || user.location.coordinates[0] === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'User location not set. Please provide latitude and longitude or update your location first.'
+        });
+      }
+      
+      [searchLng, searchLat] = user.location.coordinates;
     }
 
-    const [longitude, latitude] = user.location.coordinates;
+    const lat = parseFloat(searchLat);
+    const lng = parseFloat(searchLng);
 
-    const nearbyUsers = await User.find({
-      _id: { $ne: userId },
-      'location.coordinates': {
+    // ✅ Find nearby riders (only approved and online)
+    const nearbyRiders = await Rider.find({
+      isApproved: true,
+      isOnline: true,
+      'currentLocation.coordinates': {
         $near: {
           $geometry: {
             type: 'Point',
-            coordinates: [longitude, latitude]
+            coordinates: [lng, lat]
           },
           $maxDistance: radius * 1000
         }
       }
-    }).select('name phoneNumber location');
+    });
+
+    // ✅ Super minimal response - only what's needed for map
+    const formattedRiders = nearbyRiders.map(rider => ({
+      id: rider._id,
+      name: rider.fullName,
+      lat: rider.currentLocation.coordinates[1],
+      lng: rider.currentLocation.coordinates[0],
+      vehicle: rider.vehicle.type,
+      online: rider.isOnline
+    }));
 
     return res.status(200).json({
       success: true,
-      message: `Found ${nearbyUsers.length} nearby users`,
+      message: `Found ${formattedRiders.length} nearby riders`,
       data: {
-        nearbyUsers,
-        count: nearbyUsers.length,
-        radius: radius
+        nearbyRiders: formattedRiders,
+        count: formattedRiders.length,
+        radius: radius,
+        searchLocation: {
+          latitude: lat,
+          longitude: lng
+        }
       }
     });
   } catch (err) {
-    console.error('Find nearby users error:', err);
+    console.error('Find nearby riders error:', err);
     return res.status(500).json({
       success: false,
-      message: 'Failed to find nearby users',
+      message: 'Failed to find nearby riders',
       ...(process.env.NODE_ENV === 'development' && { error: err.message })
     });
   }

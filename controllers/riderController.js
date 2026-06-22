@@ -189,55 +189,33 @@ export const getRiderLocation = async (req, res) => {
   }
 };
 
-export const findNearbyRiders = async (req, res) => {
+// ==================== GET RIDER BY ID ====================
+export const getRiderById = async (req, res) => {
   try {
-    const { latitude, longitude, radius = 5 } = req.query;
+    const { riderId } = req.params;
 
-    let searchLat = latitude;
-    let searchLng = longitude;
+    // ✅ Find rider by ID
+    const rider = await Rider.findById(riderId)
+      .populate('userId', 'name phoneNumber email')
+      .select('fullName dateOfBirth gender address aadhaar pan drivingLicense vehicle bank verificationStatus isApproved isOnline currentLocation rating totalRides totalEarnings createdAt');
 
-    if (!searchLat || !searchLng) {
-      const userId = req.user.id;
-      const user = await User.findById(userId).select('location');
-      
-      if (user && user.location && user.location.coordinates[0] !== 0) {
-        [searchLng, searchLat] = user.location.coordinates;
-      } else {
-        return res.status(400).json({
-          success: false,
-          message: 'Location not provided. Please provide latitude and longitude.'
-        });
-      }
+    if (!rider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Rider not found'
+      });
     }
-
-    const nearbyRiders = await Rider.find({
-      isApproved: true,
-      isOnline: true,
-      'currentLocation.coordinates': {
-        $near: {
-          $geometry: {
-            type: 'Point',
-            coordinates: [parseFloat(searchLng), parseFloat(searchLat)]
-          },
-          $maxDistance: radius * 1000
-        }
-      }
-    }).populate('userId', 'name phoneNumber email');
 
     return res.status(200).json({
       success: true,
-      message: `Found ${nearbyRiders.length} nearby riders`,
-      data: {
-        nearbyRiders,
-        count: nearbyRiders.length,
-        radius: radius
-      }
+      message: 'Rider fetched successfully',
+      data: { rider }
     });
   } catch (err) {
-    console.error('Find nearby riders error:', err);
+    console.error('Get rider by ID error:', err);
     return res.status(500).json({
       success: false,
-      message: 'Failed to find nearby riders',
+      message: 'Failed to fetch rider',
       ...(process.env.NODE_ENV === 'development' && { error: err.message })
     });
   }

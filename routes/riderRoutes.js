@@ -20,6 +20,6 @@ router.put('/location', authenticate, authorize('rider'), riderController.update
 
 // Get rider location by ID (any authenticated user)
 router.get('/location/:riderId', authenticate, riderController.getRiderLocation);
-router.get('/nearby/riders', authenticate, riderController.findNearbyRiders);
+router.get('/:riderId', authenticate, riderController.getRiderById);
 
 export default router;
