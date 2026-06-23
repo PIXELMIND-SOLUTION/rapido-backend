@@ -13,4 +13,10 @@ router.put('/location', authenticate, userController.updateUserLocation);
 router.get('/location', authenticate, userController.getUserLocation);
 router.get('/nearby/riders', authenticate, userController.findNearbyRiders);
 
+// ==================== USER RIDES ====================
+router.post('/ride/request', authenticate, userController.requestRide);
+router.get('/ride/status/:rideId', authenticate, userController.getRideStatus);
+router.put('/ride/cancel/:rideId', authenticate, userController.cancelRide);
+router.get('/ride/history', authenticate, userController.getRideHistory);
+
 export default router;

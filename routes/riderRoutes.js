@@ -4,22 +4,28 @@ import * as riderController from '../controllers/riderController.js';
 
 const router = express.Router();
 
+
 // ==================== RIDER PROFILE ====================
-// Get rider profile (rider only)
 router.get('/profile', authenticate, authorize('rider'), riderController.getMyProfile);
-
-// Update rider profile (rider only)
 router.put('/profile', authenticate, authorize('rider'), riderController.updateMyProfile);
-
-// Set rider online/offline status (rider only)
 router.put('/online-status', authenticate, authorize('rider'), riderController.setOnlineStatus);
 
 // ==================== RIDER LOCATION ====================
-// Update rider location (rider only)
 router.put('/location', authenticate, authorize('rider'), riderController.updateRiderLocation);
-
-// Get rider location by ID (any authenticated user)
 router.get('/location/:riderId', authenticate, riderController.getRiderLocation);
+
+// ==================== RIDER DETAILS ====================
 router.get('/:riderId', authenticate, riderController.getRiderById);
+
+// ==================== RIDER RIDES ====================
+router.put('/ride/accept/:rideId', authenticate, authorize('rider'), riderController.acceptRide);
+router.put('/ride/reject/:rideId', authenticate, authorize('rider'), riderController.rejectRide);
+router.put('/ride/verify-start/:rideId', authenticate, authorize('rider'), riderController.verifyOTPAndStartRide);
+router.put('/ride/complete/:rideId', authenticate, authorize('rider'), riderController.completeRide);
+router.get('/ride/details/:rideId', authenticate, authorize('rider'), riderController.getRideDetails);
+
+router.get('/ride/history', authenticate, authorize('rider'), riderController.getRiderRides);
+
+
 
 export default router;

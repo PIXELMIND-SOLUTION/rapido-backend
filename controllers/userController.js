@@ -1,5 +1,7 @@
 import User from '../models/User.js';
 import Rider from '../models/Rider.js';
+import Ride from '../models/Ride.js'; 
+import { calculateDistance, calculateFare } from '../utils/fareCalculator.js';
 // ==================== USER PROFILE ====================
 
 export const getProfile = async (req, res) => {
@@ -237,6 +239,260 @@ export const findNearbyRiders = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to find nearby riders',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    });
+  }
+};
+
+
+// ===================== Booking  Rides =======================
+
+// Request a ride
+export const requestRide = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { pickup, dropoff, vehicleType = 'bike', ladyCaptain = false } = req.body;
+
+    if (!pickup || !dropoff || !pickup.latitude || !pickup.longitude || !dropoff.latitude || !dropoff.longitude) {
+      return res.status(400).json({
+        success: false,
+        message: 'Pickup and dropoff locations with coordinates are required'
+      });
+    }
+
+    const existingRide = await Ride.findOne({
+      userId,
+      status: { $in: ['searching', 'accepted', 'started'] }
+    });
+
+    if (existingRide) {
+      return res.status(400).json({
+        success: false,
+        message: 'You already have an active ride',
+        data: { rideId: existingRide._id, status: existingRide.status }
+      });
+    }
+
+    const distance = calculateDistance(
+      pickup.latitude, pickup.longitude,
+      dropoff.latitude, dropoff.longitude
+    );
+    const fare = calculateFare(distance, vehicleType, ladyCaptain);
+
+    const ride = new Ride({
+      userId,
+      pickup,
+      dropoff,
+      distance,
+      fare,
+      vehicleType,
+      ladyCaptain,
+      status: 'searching',
+      expiresAt: new Date(Date.now() + 200 * 1000)
+    });
+
+    await ride.save();
+
+    const nearbyRiders = await Rider.find({
+      isApproved: true,
+      isOnline: true,
+      ...(ladyCaptain && { gender: 'female' }),
+      'currentLocation.coordinates': {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [pickup.longitude, pickup.latitude]
+          },
+          $maxDistance: 5000
+        }
+      }
+    }).select('_id');
+
+    if (nearbyRiders.length === 0) {
+      ride.status = 'expired';
+      await ride.save();
+      return res.status(404).json({
+        success: false,
+        message: ladyCaptain ? 'No lady riders available. Try without Lady Captain.' : 'No riders available nearby.'
+      });
+    }
+
+    const io = req.app.get('io');
+    nearbyRiders.forEach(r => {
+      io.to(`rider_${r._id}`).emit('ride:new-request', {
+        rideId: ride._id,
+        userId: userId,
+        pickup: pickup,
+        dropoff: dropoff,
+        distance: distance.toFixed(1),
+        fare: fare,
+        ladyCaptain: ladyCaptain,
+        vehicleType: vehicleType,
+        timestamp: new Date()
+      });
+    });
+
+    io.to(`user_${userId}`).emit('ride:searching', {
+      rideId: ride._id,
+      totalRiders: nearbyRiders.length,
+      message: `Searching for riders... (0/${nearbyRiders.length})`
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Ride requested. Searching for riders...',
+      data: {
+        rideId: ride._id,
+        status: 'searching',
+        totalRiders: nearbyRiders.length,
+        fare,
+        distance: distance.toFixed(1),
+        expiresIn: '30 seconds'
+      }
+    });
+  } catch (err) {
+    console.error('Request ride error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to request ride',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    });
+  }
+};
+
+// Get ride status
+export const getRideStatus = async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    const userId = req.user.id;
+
+    const ride = await Ride.findOne({ _id: rideId, userId });
+    if (!ride) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ride not found'
+      });
+    }
+
+    let riderDetails = null;
+    if (ride.riderId) {
+      const rider = await Rider.findById(ride.riderId)
+        .populate('userId', 'name phoneNumber');
+      if (rider) {
+        riderDetails = {
+          id: rider._id,
+          name: rider.fullName,
+          phone: rider.userId?.phoneNumber,
+          vehicle: rider.vehicle,
+          rating: rider.rating,
+          otp: rider.rideOTP
+        };
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        rideId: ride._id,
+        status: ride.status,
+        otp: ride.rideOTP,
+        fare: ride.fare,
+        pickup: ride.pickup,
+        dropoff: ride.dropoff,
+        ladyCaptain: ride.ladyCaptain,
+        rejectedCount: ride.rejectedRiders?.length || 0,
+        rider: riderDetails,
+        createdAt: ride.createdAt,
+        acceptedAt: ride.acceptedAt
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get ride status',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    });
+  }
+};
+
+// Cancel ride
+export const cancelRide = async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    const userId = req.user.id;
+
+    const ride = await Ride.findOne({ _id: rideId, userId });
+    if (!ride) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ride not found'
+      });
+    }
+
+    if (['completed', 'cancelled', 'expired'].includes(ride.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot cancel ${ride.status} ride`
+      });
+    }
+
+    ride.status = 'cancelled';
+    await ride.save();
+
+    if (ride.riderId) {
+      const io = req.app.get('io');
+      io.to(`rider_${ride.riderId}`).emit('ride:cancelled', {
+        rideId: ride._id,
+        message: 'User cancelled the ride'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Ride cancelled successfully'
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to cancel ride',
+      ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    });
+  }
+};
+
+// Get user ride history
+export const getRideHistory = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status, limit = 20, page = 1 } = req.query;
+
+    const query = { userId };
+    if (status) query.status = status;
+
+    const rides = await Ride.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit))
+      .populate('riderId', 'fullName vehicle');
+
+    const total = await Ride.countDocuments(query);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        rides,
+        pagination: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get ride history',
       ...(process.env.NODE_ENV === 'development' && { error: err.message })
     });
   }
